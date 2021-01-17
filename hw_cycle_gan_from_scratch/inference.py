@@ -78,7 +78,7 @@ def main():
     checkpoint_path = os.path.join(
         os.path.dirname(__file__),
         "cycle_gan_training_checkpoints",
-        "checkpoint_epoch_3.tar",
+        "checkpoint_epoch_31.tar",
     )
     model = load_model(
         checkpoint_path=checkpoint_path,

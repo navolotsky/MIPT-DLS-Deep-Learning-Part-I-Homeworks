@@ -5,6 +5,8 @@ from itertools import chain
 import torch
 from tqdm import tqdm
 
+from .utils import WeightsFreezer as freezed
+
 
 def get_last_created_file(dir_path, file_ext) -> os.DirEntry:
     files = [entry for entry in os.scandir(
@@ -150,9 +152,21 @@ class Trainer:
         if losses is None:
             losses = []
             setattr(self, 'loss_by_epochs', losses)
+        
+        model = self.model
+        was_training = model.training
+        model.train()
+        
+        generators_parameters = [
+            *model.forward_generator.parameters(),
+            *model.backward_generator.parameters()
+        ]
 
-        was_training = self.model.training
-        self.model.train()
+        discriminators_parameters = [
+            *model.forward_discriminator.parameters(),
+            *model.backward_discriminator.parameters()
+        ]
+        
         X_len, Y_len = len(self.X_loader), len(self.Y_loader)
         batches_num = max(X_len, Y_len)
         def get_X_iter(): return iter(self.X_loader)
@@ -175,12 +189,21 @@ class Trainer:
                     X_batch = X_batch.to(self.device)
                     Y_batch = Y_batch.to(self.device)
                     self.gen_optimizer.zero_grad()
-                    model_output = self.model(X_batch, Y_batch)
-                    loss = self.criterion(
-                        self.model.forward_generator, self.model.forward_discriminator,
-                        self.model.backward_generator, self.model.backward_discriminator,
-                        X_batch, Y_batch, *model_output)
-                    loss.backward()
+                    model_output = model(X_batch, Y_batch)
+                    (
+                        fgen_loss, fdis_loss,
+                        bgen_loss, bdis_loss,
+                        cyc_loss
+                    ) = self.criterion(X_batch, Y_batch, *model_output)
+                    gens_loss = fgen_loss + bgen_loss + cyc_loss
+                    diss_loss = fdis_loss + bdis_loss
+                    with freezed(discriminators_parameters):
+                        # retain_graph=True is required because
+                        # a computation graph node is shared between gen and dis:
+                        gens_loss.backward(retain_graph=True)
+                    with freezed(generators_parameters):
+                        diss_loss.backward()
+                    loss = gens_loss + diss_loss
                     epoch_cum_loss += loss.item()
                     self.gen_optimizer.step()
                     if (j + 1) % self.batches_per_discriminators_update == 0:
@@ -201,4 +224,4 @@ class Trainer:
                         self.checkpoints_saving_stride
                     )
         self.save_model(model_attr_name='model')
-        self.model.train(was_training)
+        model.train(was_training)

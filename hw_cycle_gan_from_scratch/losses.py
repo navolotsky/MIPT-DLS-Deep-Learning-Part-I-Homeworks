@@ -1,23 +1,20 @@
 import torch
 from torch import nn
 
-from .utils import ModelWeightsFreezer as freezed
-
 
 class AdversarialLoss(nn.Module):
     def forward(
-            self, generator, discriminator,
-            discriminator_output_on_fake, discriminator_output_on_real):
+            self,
+            discriminator_output_on_fake,
+            discriminator_output_on_real):
         probs_on_fake = torch.sigmoid(
             discriminator_output_on_fake).mean((-2, -1))
         probs_on_real = torch.sigmoid(
             discriminator_output_on_real).mean((-2, -1))
-        with freezed(discriminator):
-            gen_term = torch.mean((probs_on_fake - 1) ** 2)
-        with freezed(generator):
-            dis_term = torch.mean(probs_on_fake ** 2) + \
-                torch.mean((probs_on_real - 1) ** 2)
-        return gen_term + dis_term
+        gen_term = torch.mean((probs_on_fake - 1) ** 2)
+        dis_term = torch.mean(probs_on_fake ** 2) + \
+            torch.mean((probs_on_real - 1) ** 2)
+        return gen_term, dis_term
 
 
 class OneDirectionCycleConsistencyLoss(nn.Module):
@@ -36,7 +33,9 @@ class CycleConsistencyLoss(nn.Module):
         self.one_direction_loss = OneDirectionCycleConsistencyLoss()
 
     def forward(self, input, reconstructed_input, target, reconstructed_target):
-        return self.one_direction_loss(input, reconstructed_input) + self.one_direction_loss(target, reconstructed_target)
+        return (
+            self.one_direction_loss(input, reconstructed_input) +
+            self.one_direction_loss(target, reconstructed_target))
 
 
 class IdentityMappingLoss:
@@ -49,6 +48,16 @@ class IdentityMappingLoss:
 
 
 class CycleGANLoss(nn.Module):
+    # I wanted to implement this in more intelligent way,
+    # but this feature (detach for model weights) is not implemented so far:
+    # https://discuss.pytorch.org/t/how-to-use-a-layer-with-gradient-but-without-weight-adjustment/86190
+
+    """
+    To use it correctly, you must manually freeze
+    discriminators parameters when backpropagating generators losses
+    and freeze generators parameters when backpropagating discriminators losses.
+    """
+
     def __init__(
         self,
         cycle_consistency_weight=10,  # aka lambda
@@ -67,8 +76,6 @@ class CycleGANLoss(nn.Module):
 
     def forward(
         self,
-        forward_generator, forward_discriminator,
-        backward_generator, backward_discriminator,
         input, target,
         generated_from_input, reconstructed_input,
         generated_from_target, reconstructed_target,
@@ -77,13 +84,11 @@ class CycleGANLoss(nn.Module):
         backward_discriminator_output_on_generated_from_target,
         backward_discriminator_output_on_input
     ):
-        forward_adv_loss = self.adversarial_loss(
-            forward_generator, forward_discriminator,
+        fgen_loss, fdis_loss = self.adversarial_loss(
             forward_discriminator_output_on_generated_from_input,
             forward_discriminator_output_on_target
         )
-        backward_adv_loss = self.adversarial_loss(
-            backward_generator, backward_discriminator,
+        bgen_loss, bdis_loss = self.adversarial_loss(
             backward_discriminator_output_on_generated_from_target,
             backward_discriminator_output_on_input
         )
@@ -92,12 +97,13 @@ class CycleGANLoss(nn.Module):
             target, reconstructed_target
         )
         weighted_cyc_loss = self.cyc_weight * cyc_loss
-        loss = forward_adv_loss + backward_adv_loss + weighted_cyc_loss
+        losses = [fgen_loss, fdis_loss, bgen_loss,
+                  bdis_loss, weighted_cyc_loss]
         if self.include_identity_loss:
             id_loss = self.identity_loss(
                 input, generated_from_input,
                 target, generated_from_target
             )
             weighted_id_loss = self.id_fraction_from_cyc_weight * self.cyc_weight * id_loss
-            loss += weighted_id_loss
-        return loss
+            losses.append(weighted_id_loss)
+        return losses

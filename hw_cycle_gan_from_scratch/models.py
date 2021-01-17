@@ -1,3 +1,8 @@
+# CycleGAN architecture from scratch implementation based on the original paper.
+# [CycleGAN, 24 Aug 2020, 7th revision] Unpaired Image-to-Image Translation using Cycle-Consistent Adversarial Networks
+# https://arxiv.org/pdf/1703.10593.pdf
+
+
 from torch import nn
 
 

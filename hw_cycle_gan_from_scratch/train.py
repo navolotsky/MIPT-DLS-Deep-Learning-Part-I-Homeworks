@@ -114,7 +114,7 @@ if __name__ == "__main__":
                           epochs=STAGE_1_EPOCHS, batches_per_discriminators_update=BATCHES_PER_DISCRIMINATORS_UPDATE, device=DEVICE)
 
     runs = 0
-    max_tries = 1
+    max_tries = 3
     while True:
         runs += 1
         try:
