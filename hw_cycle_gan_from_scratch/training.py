@@ -108,7 +108,7 @@ class Trainer:
             self.train_checkpoints_dir, checkpoint_name)
         torch.save(getattr(self, model_attr_name).state_dict(), checkpoint_path)
 
-    def load_state(self, path=None):
+    def load_state(self, path=None, **overriding_kwargs):
         self._training_state.clear()
         if path is None:
             try:
@@ -122,11 +122,13 @@ class Trainer:
                     "checkpoint directory is empty: ", self.train_checkpoints_dir)
             path = last_checkpoint.path
         state_dict = torch.load(path)
+        state_dict.update(overriding_kwargs)
         self._convert_state_dict_to_internal_state(state_dict)
         self._state_attr_names = set(self._training_state.keys())
 
     def _convert_state_dict_to_internal_state(self, state_dict):
-        special_cases = ('model', 'gen_optimizer', 'dis_optimizer')
+        special_cases = ('model', 'gen_optimizer', 'dis_optimizer',
+                         'gen_lr_scheduler', 'dis_lr_scheduler')
         for key, (typ, val) in state_dict.items():
             if key not in special_cases:
                 setattr(self, key, val)
@@ -146,17 +148,41 @@ class Trainer:
             model.backward_discriminator.parameters()
         ))
         dis_optimizer.load_state_dict(val)
+        typ, val = state_dict['gen_lr_scheduler']
+        self.gen_lr_scheduler = gen_lr_scheduler = typ(
+            gen_optimizer, lr_lambda=self.gen_lr_lambda
+        )
+        gen_lr_scheduler.load_state_dict(val)
+        typ, val = state_dict['dis_lr_scheduler']
+        self.dis_lr_scheduler = dis_lr_scheduler = typ(
+            dis_optimizer, lr_lambda=self.dis_lr_lambda
+        )
+        dis_lr_scheduler.load_state_dict(val)
 
     def run(self):
         losses = getattr(self, 'loss_by_epochs', None)
         if losses is None:
             losses = []
             setattr(self, 'loss_by_epochs', losses)
-        
+        generators_learning_rates = getattr(
+            self, 'generators_learning_rates', None)
+        if generators_learning_rates is None:
+            gen_last_lr = self.gen_lr_scheduler.get_last_lr()[-1]
+            generators_learning_rates = [gen_last_lr]
+            setattr(self, 'generators_learning_rates',
+                    generators_learning_rates)
+        discriminators_learning_rates = getattr(
+            self, 'discriminators_learning_rates', None)
+        if discriminators_learning_rates is None:
+            dis_last_lr = self.dis_lr_scheduler.get_last_lr()[-1]
+            discriminators_learning_rates = [dis_last_lr]
+            setattr(self, 'discriminators_learning_rates',
+                    discriminators_learning_rates)
+
         model = self.model
         was_training = model.training
         model.train()
-        
+
         generators_parameters = [
             *model.forward_generator.parameters(),
             *model.backward_generator.parameters()
@@ -166,7 +192,7 @@ class Trainer:
             *model.forward_discriminator.parameters(),
             *model.backward_discriminator.parameters()
         ]
-        
+
         X_len, Y_len = len(self.X_loader), len(self.Y_loader)
         batches_num = max(X_len, Y_len)
         def get_X_iter(): return iter(self.X_loader)
@@ -181,11 +207,14 @@ class Trainer:
                 *[iter(self.X_loader) for _ in range(Y_len // X_len + 1)])
 
         epoch = getattr(self, 'epoch', -1) + 1
-        postfix_kwargs = {'loss': losses[-1] if losses else None}
-        with tqdm(range(epoch, self.epochs), initial=epoch, total=self.epochs, desc="epochs", postfix={'loss': losses[-1] if losses else None}) as pbar:
+        postfix_kwargs = {
+            'loss': losses[-1] if losses else None,
+            'gen_lr': "{:.4e}".format(self.generators_learning_rates[-1]),
+            'dis_lr': "{:.4e}".format(self.discriminators_learning_rates[-1])}
+        with tqdm(range(epoch, self.epochs), initial=epoch, total=self.epochs, desc="epochs", postfix=postfix_kwargs) as pbar:
             for self.epoch in pbar:
                 epoch_cum_loss = 0
-                for j, (X_batch, Y_batch) in tqdm(enumerate(zip(get_X_iter(), get_Y_iter())), total=batches_num, desc="batches"):
+                for j, (X_batch, Y_batch) in tqdm(enumerate(zip(get_X_iter(), get_Y_iter())), total=batches_num, desc="batches", leave=self.epoch == self.epochs - 1):
                     X_batch = X_batch.to(self.device)
                     Y_batch = Y_batch.to(self.device)
                     self.gen_optimizer.zero_grad()
@@ -212,9 +241,17 @@ class Trainer:
                 if batches_num % self.batches_per_discriminators_update != 0:
                     self.dis_optimizer.step()
                     self.dis_optimizer.zero_grad()
+                self.gen_lr_scheduler.step()
+                self.dis_lr_scheduler.step()
+                gen_last_lr = self.gen_lr_scheduler.get_last_lr()[-1]
+                dis_last_lr = self.dis_lr_scheduler.get_last_lr()[-1]
                 postfix_kwargs['loss'] = epoch_mean_loss = epoch_cum_loss / batches_num
+                postfix_kwargs['gen_lr'] = "{:.4e}".format(gen_last_lr)
+                postfix_kwargs['dis_lr'] = "{:.4e}".format(dis_last_lr)
                 pbar.set_postfix(postfix_kwargs)
                 losses.append(epoch_mean_loss)
+                generators_learning_rates.append(gen_last_lr)
+                discriminators_learning_rates.append(dis_last_lr)
                 self.save_state()
                 if self.retain_only_num_checkpoints is not None:
                     delete_files_except_last_created(

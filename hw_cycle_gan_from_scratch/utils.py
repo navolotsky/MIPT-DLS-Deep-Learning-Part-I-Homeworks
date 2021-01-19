@@ -37,3 +37,16 @@ class WeightsFreezer:
     def __exit__(self, exc_type, exc_value, traceback):
         unfreeze_all_params(self.params)
         return self.params
+
+
+class LRLinearlyDecayToZeroFactorFunc:
+    def __init__(self, last_epoch_num, first_epoch_num=0):
+        self.first_epoch_num = first_epoch_num
+        self.last_epoch_num = last_epoch_num
+
+    def __call__(self, current_epoch_num):
+        if current_epoch_num < self.first_epoch_num:
+            return 1
+        return (
+            (self.last_epoch_num + 1 - current_epoch_num) /
+            (self.last_epoch_num + 1 - self.first_epoch_num))

@@ -42,6 +42,7 @@ def get_data_loader(
     return data_loader
 
 
+@torch.no_grad()
 def do_tranformations(model, data_loader, output_dir, direction='forward', device='cuda'):
     device = torch.device(device)
     was_training = model.training
@@ -58,35 +59,38 @@ def do_tranformations(model, data_loader, output_dir, direction='forward', devic
         bgen = model.forward_generator
     else:
         raise ValueError('direction must be "forward" or "backward"')
-    with torch.no_grad():
-        image_num = -1
-        for batch in data_loader:
-            batch = batch.to(device)
-            transformed = fgen(batch)
-            reconstructed = bgen(transformed)
-            for o, t, r in zip(batch, transformed, reconstructed):
-                image_num += 1
-                image_path = image_path_template.format(image_num=image_num)
-                to_pil(o).save(image_path + "_0_original.jpg")
-                to_pil(t).save(image_path + "_1_transformed.jpg")
-                to_pil(r).save(image_path + "_2_reconstructed.jpg")
+    image_num = -1
+    for batch in data_loader:
+        batch = batch.to(device)
+        transformed = fgen(batch)
+        reconstructed = bgen(transformed)
+        for o, t, r in zip(batch, transformed, reconstructed):
+            image_num += 1
+            image_path = image_path_template.format(image_num=image_num)
+            to_pil(o).save(image_path + "_0_original.jpg")
+            to_pil(t).save(image_path + "_1_transformed.jpg")
+            to_pil(r).save(image_path + "_2_reconstructed.jpg")
     model.train(was_training)
 
 
-def main():
+def main(checkpoint_file,
+         checkpoint_dir="cycle_gan_training_checkpoints",
+         checkpoint_type='general',
+         resize_size=(256, 256)
+         ):
     # model
     checkpoint_path = os.path.join(
         os.path.dirname(__file__),
-        "cycle_gan_training_checkpoints",
-        "checkpoint_epoch_31.tar",
+        checkpoint_dir,
+        checkpoint_file
     )
     model = load_model(
         checkpoint_path=checkpoint_path,
-        checkpoint_type='general'
+        checkpoint_type=checkpoint_type
     )
 
     transform = transforms.Compose(
-        [transforms.Resize((256, 256)), transforms.ToTensor()]
+        [transforms.Resize(resize_size), transforms.ToTensor()]
     )
 
     # banana -> cucumber
@@ -121,4 +125,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main("checkpoint_epoch_199.tar", resize_size=256)

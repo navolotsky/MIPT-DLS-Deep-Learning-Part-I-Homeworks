@@ -3,6 +3,7 @@ from itertools import chain
 
 import torch
 from torch.optim import Adam
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
@@ -10,8 +11,9 @@ from .datasets import ImagesDataset
 from .losses import CycleGANLoss
 from .models import CycleGAN
 from .reproducibility import enable_reproducibility
-from .training import CheckpointDirectoryEmpty, Trainer
-
+from .training import (CheckpointDirectoryEmpty,
+                       Trainer)
+from .utils import LRLinearlyDecayToZeroFactorFunc
 if __name__ == "__main__":
     os.chdir(os.path.dirname(__file__))
 
@@ -39,8 +41,24 @@ if __name__ == "__main__":
     MODEL_FINAL_CHEKPOINT_NAME_TEMPLATE = "model_final_chekpoint"
     RETAIN_ONLY_NUM_CHECKPOINTS = 5
 
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    IMAGE_SMALLER_EDGE_SIZE = 256
+    BATCH_SIZE = 1
+    # BATCH_SIZE = 2
+    NUM_WORKERS = 0
+    # NUM_WORKERS = 4
+    STAGE_1_EPOCHS = 100
+    STAGE_1_LR = 2e-4
+    STAGE_2_EPOCHS = 100
+    stage_2_lr_mfactor_func = LRLinearlyDecayToZeroFactorFunc(
+        STAGE_1_EPOCHS + STAGE_2_EPOCHS - 1, STAGE_1_EPOCHS - 1)
+    VERBOSE = True
+
+    BATCHES_PER_DISCRIMINATORS_UPDATE = 50  # image buffer in the paper
     trainer = Trainer(CHEKPOINTS_DIR, CHECKPOINT_NAME_TEMPLATE,
-                      MODEL_FINAL_CHEKPOINT_NAME_TEMPLATE, RETAIN_ONLY_NUM_CHECKPOINTS)
+                      MODEL_FINAL_CHEKPOINT_NAME_TEMPLATE, RETAIN_ONLY_NUM_CHECKPOINTS,
+                      gen_lr_lambda=[stage_2_lr_mfactor_func],
+                      dis_lr_lambda=[stage_2_lr_mfactor_func])
     try:
         trainer.load_state()
         logger.info("Previous state loading succeeded.")
@@ -51,18 +69,6 @@ if __name__ == "__main__":
         Y_dataset_path = "datasets/cucumber/train"
         # X_dataset_path = "DEV_datasets/banana"
         # Y_dataset_path = "DEV_datasets/cucumber"
-
-        IMAGE_SMALLER_EDGE_SIZE = 256
-        BATCH_SIZE = 1
-        # BATCH_SIZE = 2
-        NUM_WORKERS = 0
-        # NUM_WORKERS = 4
-        STAGE_1_EPOCHS = 100
-        STAGE_1_LR = 2e-4
-        STAGE_2_EPOCHS = 100
-        BATCHES_PER_DISCRIMINATORS_UPDATE = 50  # image buffer in the paper
-        # BATCHES_PER_DISCRIMINATORS_UPDATE = 5  # image buffer in the paper
-        # BATCHES_PER_DISCRIMINATORS_UPDATE = 25  # image buffer in the paper
 
         transform = transforms.Compose([
             # transforms.Resize(IMAGE_SMALLER_EDGE_SIZE),
@@ -90,8 +96,6 @@ if __name__ == "__main__":
         Y_loader = DataLoader(Y_dataset, batch_size=BATCH_SIZE,
                               shuffle=True, num_workers=NUM_WORKERS, pin_memory=True)
 
-        DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
         model = CycleGAN().to(DEVICE)
 
         criterion = CycleGANLoss()
@@ -101,17 +105,23 @@ if __name__ == "__main__":
                 model.forward_generator.parameters(),
                 model.backward_generator.parameters()
             ), lr=STAGE_1_LR)
+        generators_lr_scheduler = LambdaLR(
+            generators_optimizer, lr_lambda=stage_2_lr_mfactor_func, verbose=VERBOSE)
         discriminators_optimizer = Adam(
             chain(
                 model.forward_discriminator.parameters(),
                 model.backward_discriminator.parameters()
             ), lr=STAGE_1_LR)
+        discriminators_lr_scheduler = LambdaLR(
+            discriminators_optimizer, lr_lambda=stage_2_lr_mfactor_func, verbose=VERBOSE)
 
         trainer = Trainer(CHEKPOINTS_DIR, CHECKPOINT_NAME_TEMPLATE,
                           MODEL_FINAL_CHEKPOINT_NAME_TEMPLATE, RETAIN_ONLY_NUM_CHECKPOINTS,
                           model=model, X_loader=X_loader, Y_loader=Y_loader, criterion=criterion,
                           gen_optimizer=generators_optimizer, dis_optimizer=discriminators_optimizer,
-                          epochs=STAGE_1_EPOCHS, batches_per_discriminators_update=BATCHES_PER_DISCRIMINATORS_UPDATE, device=DEVICE)
+                          gen_lr_scheduler=generators_lr_scheduler, dis_lr_scheduler=discriminators_lr_scheduler,
+                          epochs=STAGE_1_EPOCHS + STAGE_2_EPOCHS, epochs_num_per_stages=(STAGE_1_EPOCHS, STAGE_2_EPOCHS),
+                          batches_per_discriminators_update=BATCHES_PER_DISCRIMINATORS_UPDATE, device=DEVICE)
 
     runs = 0
     max_tries = 3
